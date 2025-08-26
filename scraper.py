@@ -45,23 +45,28 @@ async def scrape_rawg_suggestions(game_title):
             suggestions_list = []
             for element in game_elements:
                 try:
-                    # Extrai o título e a URL
                     link_element = await element.query_selector('a.game-card-compact__heading_with-link')
                     title = await link_element.inner_text()
                     url_suffix = await link_element.get_attribute('href')
                     
-                    # --- NOVO: Extrai a plataforma
-                    platform_elements = await element.query_selector_all('span.game-card-platforms-list-item')
-                    platforms = ', '.join(await asyncio.gather(*[p.inner_text() for p in platform_elements]))
+                    # --- NOVO: Extrai a plataforma a partir das classes ---
+                    platform_elements = await element.query_selector_all('div.platforms__platform')
+                    platforms = []
+                    for p in platform_elements:
+                        class_attr = await p.get_attribute('class')
+                        if class_attr:
+                            # A classe específica da plataforma é a última
+                            platform_name = class_attr.split(' ')[-1].replace('platforms__platform_', '')
+                            platforms.append(platform_name.upper()) # Converte para maiúsculas para manter o padrão
                     
-                    # --- NOVO: Extrai o Metascore
-                    metascore_element = await element.query_selector('span.metascore')
+                    # --- NOVO: Extrai o Metascore do div correto ---
+                    metascore_element = await element.query_selector('div.metascore-label')
                     metascore = await metascore_element.inner_text() if metascore_element else 'N/A'
                     
                     suggestions_list.append({
                         'title': title, 
                         'url': f"https://rawg.io{url_suffix}",
-                        'platforms': platforms,
+                        'platforms': ', '.join(platforms),
                         'metascore': metascore
                     })
                 
@@ -114,7 +119,6 @@ async def main():
         except gspread.exceptions.WorksheetNotFound:
             print("Aba 'Jogos Similares' não encontrada. Criando...")
             target_sheet = spreadsheet.add_worksheet(title="Jogos Similares", rows="100", cols="4")
-            # --- ATUALIZADO: Adiciona novas colunas ao cabeçalho ---
             target_sheet.update([['Jogo Base', 'Jogo Similar', 'Plataformas', 'Metascore', 'URL']], 'A1:E1')
             processed_titles_set = set()
 
