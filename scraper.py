@@ -4,13 +4,17 @@ import gspread
 import asyncio
 from playwright.async_api import async_playwright
 from oauth2client.service_account import ServiceAccountCredentials
+import re
 
 async def scrape_rawg_suggestions(game_title):
     """
     Navega na página de sugestões de um jogo específico no RAWG.io,
     e retorna os títulos e URLs dos jogos sugeridos.
     """
-    game_url_slug = game_title.lower().replace(' ', '-')
+    game_url_slug = game_title.lower()
+    game_url_slug = re.sub(r'[\s\':]', '-', game_url_slug)
+    game_url_slug = re.sub(r'[^a-z0-9-]', '', game_url_slug)
+    
     url = f'https://rawg.io/games/{game_url_slug}/suggestions'
 
     async with async_playwright() as p:
@@ -21,10 +25,8 @@ async def scrape_rawg_suggestions(game_title):
         await page.goto(url, wait_until='networkidle')
 
         try:
-            # Espera que o contêiner principal dos jogos esteja visível
             await page.wait_for_selector('div.game-suggestions__items', timeout=60000)
 
-            # Encontra todos os elementos de cartão de jogo
             game_elements = await page.query_selector_all('div.game-card-large')
             
             suggestions_list = []
@@ -73,38 +75,48 @@ async def main():
         
         # 2. Lê a coluna A da aba 'Jogos'
         source_sheet = spreadsheet.worksheet("Jogos")
-        game_titles = [cell[0] for cell in source_sheet.get_all_values() if cell and cell[0] != '']
+        all_game_titles = [cell[0] for cell in source_sheet.get_all_values() if cell and cell[0] != '']
         
-        if not game_titles:
+        if not all_game_titles:
             print("Nenhum título de jogo encontrado na planilha.")
             return
 
-        # 3. Prepara a aba 'Jogos Similares' para escrever
+        # 3. Lógica para verificar jogos já processados
         try:
             target_sheet = spreadsheet.worksheet("Jogos Similares")
-            # Limpa o conteúdo da aba antes de escrever
-            target_sheet.clear()
+            processed_titles = target_sheet.col_values(1)
+            processed_titles_set = set(processed_titles)
         except gspread.exceptions.WorksheetNotFound:
-            print("Criando a aba 'Jogos Similares'...")
+            print("Aba 'Jogos Similares' não encontrada. Criando...")
             target_sheet = spreadsheet.add_worksheet(title="Jogos Similares", rows="100", cols="4")
+            target_sheet.update([['Jogo Base', 'Jogo Similar', 'URL']], 'A1:C1')
+            processed_titles_set = set()
 
-        # Escreve o cabeçalho
-        target_sheet.update('A1:C1', [['Jogo Base', 'Jogo Similar', 'URL']])
+        # Filtra a lista para processar apenas jogos novos
+        games_to_scrape = [
+            title for title in all_game_titles if title not in processed_titles_set
+        ]
+
+        if not games_to_scrape:
+            print("Todos os jogos já foram processados. Nenhuma ação necessária.")
+            return
+            
+        print(f"Encontrados {len(games_to_scrape)} jogos para processar.")
         
-        all_results = []
-        for game_title in game_titles:
-            print(f"Processando jogo: {game_title}")
+        # Processa e salva cada jogo individualmente
+        for game_title in games_to_scrape:
             suggestions = await scrape_rawg_suggestions(game_title)
             
-            for suggestion in suggestions:
-                all_results.append([game_title, suggestion['title'], suggestion['url']])
+            if suggestions:
+                rows_to_append = []
+                for suggestion in suggestions:
+                    rows_to_append.append([game_title, suggestion['title'], suggestion['url']])
+                
+                target_sheet.append_rows(rows_to_append)
+                print(f"Dados de '{game_title}' salvos com sucesso. {len(rows_to_append)} linhas adicionadas.")
+            else:
+                print(f"Nenhum resultado de jogos similares encontrado para '{game_title}'.")
 
-        # 4. Salva os resultados
-        if all_results:
-            target_sheet.append_rows(all_results)
-            print(f"Dados salvos com sucesso na aba 'Jogos Similares'. {len(all_results)} linhas adicionadas.")
-        else:
-            print("Nenhum resultado de jogos similares encontrado.")
 
     except Exception as e:
         print(f"Ocorreu um erro fatal: {e}")
