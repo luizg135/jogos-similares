@@ -11,14 +11,15 @@ async def scrape_rawg_suggestions(game_title):
     Navega na página de sugestões de um jogo específico no RAWG.io,
     e retorna até 30 títulos, plataformas, Metascore e URLs de jogos sugeridos.
     """
-    # --- LÓGICA CORRIGIDA PARA TRATAR NOMES DE JOGOS ---
-    # 1. Converte para minúsculas.
-    # 2. Remove apóstrofos e dois-pontos.
-    # 3. Substitui espaços por hífens.
-    # 4. Remove quaisquer outros caracteres não alfanuméricos ou hífens.
-    game_url_slug = re.sub(r"[':]", '', game_title.lower())
-    game_url_slug = re.sub(r'[\s]', '-', game_url_slug)
-    game_url_slug = re.sub(r'[^a-z0-9-]', '', game_url_slug)
+    # --- NOVA LÓGICA: TRATAMENTO DE CASO ESPECÍFICO ---
+    if game_title.lower() == 'forspoken':
+        game_url_slug = 'project-athia'
+        print("Tratamento especial para 'Forspoken': usando slug 'project-athia'.")
+    else:
+        # Lógica original para tratar nomes de jogos
+        game_url_slug = re.sub(r"[':]", '', game_title.lower())
+        game_url_slug = re.sub(r'[\s]', '-', game_url_slug)
+        game_url_slug = re.sub(r'[^a-z0-9-]', '', game_url_slug)
     
     url = f'https://rawg.io/games/{game_url_slug}/suggestions'
     print(f"URL de busca gerada: {url}")
