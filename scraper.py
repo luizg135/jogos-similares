@@ -17,9 +17,8 @@ async def scrape_rawg_suggestions(game_title):
     
     url = f'https://rawg.io/games/{game_url_slug}/suggestions'
     
-    limit = 30
-    clicks_to_load = 2
-
+    limit = 40
+    
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
@@ -29,44 +28,56 @@ async def scrape_rawg_suggestions(game_title):
 
         try:
             await page.wait_for_selector('div.game-suggestions__items', timeout=60000)
-            
-            for _ in range(clicks_to_load):
-                load_more_button = await page.query_selector('button#load-more-button')
-                if load_more_button and await load_more_button.is_visible():
-                    print("Botão 'Carregar Mais' encontrado. Clicando...")
-                    await load_more_button.click()
-                    await page.wait_for_timeout(2000) 
-                else:
-                    print("Botão 'Carregar Mais' não visível. Interrompendo cliques.")
+
+            last_height = await page.evaluate("document.body.scrollHeight")
+            scroll_count = 0
+            while True:
+                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                await page.wait_for_timeout(2000)
+                new_height = await page.evaluate("document.body.scrollHeight")
+                
+                scroll_count += 1
+                
+                if new_height == last_height or len(await page.query_selector_all('div.game-card-large')) >= limit:
+                    print(f"Rolagem finalizada após {scroll_count} iterações. Total de jogos carregados.")
                     break
+                
+                last_height = new_height
 
             game_elements = await page.query_selector_all('div.game-card-large')
             
             suggestions_list = []
+            allowed_platforms = ['playstation', 'pc']
+            
             for element in game_elements:
                 try:
-                    link_element = await element.query_selector('a.game-card-compact__heading_with-link')
-                    title = await link_element.inner_text()
-                    url_suffix = await link_element.get_attribute('href')
-                    
-                    # --- NOVO: Extrai a plataforma a partir das classes ---
                     platform_elements = await element.query_selector_all('div.platforms__platform')
                     platforms = []
                     for p in platform_elements:
                         class_attr = await p.get_attribute('class')
                         if class_attr:
-                            # A classe específica da plataforma é a última
                             platform_name = class_attr.split(' ')[-1].replace('platforms__platform_', '')
-                            platforms.append(platform_name.upper()) # Converte para maiúsculas para manter o padrão
+                            platforms.append(platform_name.lower())
                     
-                    # --- NOVO: Extrai o Metascore do div correto ---
                     metascore_element = await element.query_selector('div.metascore-label')
                     metascore = await metascore_element.inner_text() if metascore_element else 'N/A'
+                    
+                    if metascore == 'N/A':
+                        print(f"Jogo ignorado por ter Metascore 'N/A'.")
+                        continue
+
+                    if not any(p in platforms for p in allowed_platforms):
+                        print("Jogo ignorado por não estar em PC ou PlayStation.")
+                        continue
+                        
+                    link_element = await element.query_selector('a.game-card-compact__heading_with-link')
+                    title = await link_element.inner_text()
+                    url_suffix = await link_element.get_attribute('href')
                     
                     suggestions_list.append({
                         'title': title, 
                         'url': f"https://rawg.io{url_suffix}",
-                        'platforms': ', '.join(platforms),
+                        'platforms': ', '.join(p.upper() for p in platforms),
                         'metascore': metascore
                     })
                 
@@ -96,6 +107,14 @@ def get_google_sheets_client():
     )
     return gspread.authorize(creds)
 
+# Função auxiliar para normalizar nomes de jogos para comparação
+def normalize_game_name(name):
+    """Converte o nome do jogo para minúsculas e remove caracteres especiais para comparação."""
+    if not isinstance(name, str):
+        return ""
+    name = name.strip().lower()
+    return re.sub(r'[\s\':]', '', name)
+
 async def main():
     """
     Função principal que orquestra a leitura, raspagem e escrita dos dados.
@@ -114,7 +133,8 @@ async def main():
 
         try:
             target_sheet = spreadsheet.worksheet("Jogos Similares")
-            processed_titles = target_sheet.col_values(1)
+            # Lê a primeira coluna e normaliza os nomes para comparação
+            processed_titles = [normalize_game_name(title) for title in target_sheet.col_values(1)]
             processed_titles_set = set(processed_titles)
         except gspread.exceptions.WorksheetNotFound:
             print("Aba 'Jogos Similares' não encontrada. Criando...")
@@ -122,8 +142,9 @@ async def main():
             target_sheet.update([['Jogo Base', 'Jogo Similar', 'Plataformas', 'Metascore', 'URL']], 'A1:E1')
             processed_titles_set = set()
 
+        # Filtra a lista de jogos, normalizando o título antes da comparação
         games_to_scrape = [
-            title for title in all_game_titles if title not in processed_titles_set
+            title for title in all_game_titles if normalize_game_name(title) not in processed_titles_set
         ]
 
         if not games_to_scrape:
