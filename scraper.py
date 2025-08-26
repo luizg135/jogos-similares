@@ -11,24 +11,31 @@ async def scrape_rawg_suggestions(game_title):
     Navega na página de sugestões de um jogo específico no RAWG.io,
     e retorna até 30 títulos, plataformas, Metascore e URLs de jogos sugeridos.
     """
-    game_url_slug = game_title.lower()
-    game_url_slug = re.sub(r'[\s\':]', '-', game_url_slug)
+    # --- LÓGICA CORRIGIDA PARA TRATAR NOMES DE JOGOS ---
+    # 1. Converte para minúsculas.
+    # 2. Remove apóstrofos e dois-pontos.
+    # 3. Substitui espaços por hífens.
+    # 4. Remove quaisquer outros caracteres não alfanuméricos ou hífens.
+    game_url_slug = re.sub(r"[':]", '', game_title.lower())
+    game_url_slug = re.sub(r'[\s]', '-', game_url_slug)
     game_url_slug = re.sub(r'[^a-z0-9-]', '', game_url_slug)
     
     url = f'https://rawg.io/games/{game_url_slug}/suggestions'
+    print(f"URL de busca gerada: {url}")
     
-    limit = 40
+    limit = 30
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
 
         print(f"Buscando sugestões para '{game_title}' em: {url}")
-        await page.goto(url, wait_until='networkidle')
+        await page.goto(url, wait_until='domcontentloaded')
 
         try:
             await page.wait_for_selector('div.game-suggestions__items', timeout=60000)
-
+            await page.wait_for_timeout(3000)
+            
             last_height = await page.evaluate("document.body.scrollHeight")
             scroll_count = 0
             while True:
@@ -107,13 +114,12 @@ def get_google_sheets_client():
     )
     return gspread.authorize(creds)
 
-# Função auxiliar para normalizar nomes de jogos para comparação
 def normalize_game_name(name):
     """Converte o nome do jogo para minúsculas e remove caracteres especiais para comparação."""
     if not isinstance(name, str):
         return ""
     name = name.strip().lower()
-    return re.sub(r'[\s\':]', '', name)
+    return re.sub(r"['\s:]", '', name)
 
 async def main():
     """
@@ -133,7 +139,6 @@ async def main():
 
         try:
             target_sheet = spreadsheet.worksheet("Jogos Similares")
-            # Lê a primeira coluna e normaliza os nomes para comparação
             processed_titles = [normalize_game_name(title) for title in target_sheet.col_values(1)]
             processed_titles_set = set(processed_titles)
         except gspread.exceptions.WorksheetNotFound:
@@ -142,7 +147,6 @@ async def main():
             target_sheet.update([['Jogo Base', 'Jogo Similar', 'Plataformas', 'Metascore', 'URL']], 'A1:E1')
             processed_titles_set = set()
 
-        # Filtra a lista de jogos, normalizando o título antes da comparação
         games_to_scrape = [
             title for title in all_game_titles if normalize_game_name(title) not in processed_titles_set
         ]
