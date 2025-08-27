@@ -5,6 +5,7 @@ import asyncio
 from playwright.async_api import async_playwright
 from oauth2client.service_account import ServiceAccountCredentials
 import re
+import sys # Adicionado para ler argumentos da linha de comando
 
 async def scrape_rawg_suggestions(game_title):
     """
@@ -61,8 +62,8 @@ async def scrape_rawg_suggestions(game_title):
                 try:
                     platform_elements = await element.query_selector_all('div.platforms__platform')
                     platforms = []
-                    for p in platform_elements:
-                        class_attr = await p.get_attribute('class')
+                    for plat in platform_elements:
+                        class_attr = await plat.get_attribute('class')
                         if class_attr:
                             platform_name = class_attr.split(' ')[-1].replace('platforms__platform_', '')
                             platforms.append(platform_name.lower())
@@ -71,11 +72,11 @@ async def scrape_rawg_suggestions(game_title):
                     metascore = await metascore_element.inner_text() if metascore_element else 'N/A'
                     
                     if metascore == 'N/A':
-                        print(f"Jogo ignorado por ter Metascore 'N/A'.")
+                        # print(f"Jogo ignorado por ter Metascore 'N/A'.") # Log opcional
                         continue
 
                     if not any(p in platforms for p in allowed_platforms):
-                        print("Jogo ignorado por não estar em PC ou PlayStation.")
+                        # print("Jogo ignorado por não estar em PC ou PlayStation.") # Log opcional
                         continue
                         
                     link_element = await element.query_selector('a.game-card-compact__heading_with-link')
@@ -125,39 +126,63 @@ def normalize_game_name(name):
 async def main():
     """
     Função principal que orquestra a leitura, raspagem e escrita dos dados.
+    Agora pode rodar para um único jogo ou para todos os pendentes.
     """
+    
+    # Verifica se um nome de jogo foi passado como argumento
+    game_to_process_from_arg = None
+    if len(sys.argv) > 1:
+        game_to_process_from_arg = sys.argv[1]
+        print(f"Argumento recebido. Processando um único jogo: '{game_to_process_from_arg}'")
+    
     try:
         client = get_google_sheets_client()
         spreadsheet_name = "database-jogos"
         spreadsheet = client.open(spreadsheet_name)
         
-        source_sheet = spreadsheet.worksheet("Jogos")
-        all_game_titles = [cell[0] for cell in source_sheet.get_all_values() if cell and cell[0] != '']
-        
-        if not all_game_titles:
-            print("Nenhum título de jogo encontrado na planilha.")
-            return
+        games_to_scrape = []
 
-        try:
-            target_sheet = spreadsheet.worksheet("Jogos Similares")
-            processed_titles = [normalize_game_name(title) for title in target_sheet.col_values(1)]
-            processed_titles_set = set(processed_titles)
-        except gspread.exceptions.WorksheetNotFound:
-            print("Aba 'Jogos Similares' não encontrada. Criando...")
-            target_sheet = spreadsheet.add_worksheet(title="Jogos Similares", rows="100", cols="4")
-            target_sheet.update([['Jogo Base', 'Jogo Similar', 'Plataformas', 'Metascore', 'URL']], 'A1:E1')
-            processed_titles_set = set()
+        if game_to_process_from_arg:
+            # Se um jogo foi passado como argumento, essa é nossa lista de tarefas
+            games_to_scrape.append(game_to_process_from_arg)
+        else:
+            # Lógica original: buscar todos os jogos pendentes na planilha
+            print("Nenhum argumento recebido. Verificando todos os jogos pendentes na planilha...")
+            source_sheet = spreadsheet.worksheet("Jogos")
+            all_game_titles = [cell[0] for cell in source_sheet.get_all_values() if cell and cell[0] != '']
+            
+            if not all_game_titles:
+                print("Nenhum título de jogo encontrado na planilha.")
+                return
 
-        games_to_scrape = [
-            title for title in all_game_titles if normalize_game_name(title) not in processed_titles_set
-        ]
+            try:
+                target_sheet = spreadsheet.worksheet("Jogos Similares")
+                processed_titles = [normalize_game_name(title) for title in target_sheet.col_values(1)]
+                processed_titles_set = set(processed_titles)
+            except gspread.exceptions.WorksheetNotFound:
+                print("Aba 'Jogos Similares' não encontrada. Criando...")
+                target_sheet = spreadsheet.add_worksheet(title="Jogos Similares", rows="100", cols="5")
+                target_sheet.update([['Jogo Base', 'Jogo Similar', 'Plataformas', 'Metascore', 'URL']], 'A1:E1')
+                processed_titles_set = set()
+
+            games_to_scrape = [
+                title for title in all_game_titles if normalize_game_name(title) not in processed_titles_set
+            ]
 
         if not games_to_scrape:
-            print("Todos os jogos já foram processados. Nenhuma ação necessária.")
+            print("Nenhum jogo para processar. Nenhuma ação necessária.")
             return
             
         print(f"Encontrados {len(games_to_scrape)} jogos para processar.")
         
+        # Garante que a planilha de destino seja carregada
+        try:
+            target_sheet = spreadsheet.worksheet("Jogos Similares")
+        except gspread.exceptions.WorksheetNotFound:
+            print("Aba 'Jogos Similares' não encontrada. Criando...")
+            target_sheet = spreadsheet.add_worksheet(title="Jogos Similares", rows="100", cols="5")
+            target_sheet.update([['Jogo Base', 'Jogo Similar', 'Plataformas', 'Metascore', 'URL']], 'A1:E1')
+
         for game_title in games_to_scrape:
             suggestions = await scrape_rawg_suggestions(game_title)
             
@@ -179,6 +204,7 @@ async def main():
 
     except Exception as e:
         print(f"Ocorreu um erro fatal: {e}")
+        traceback.print_exc()
 
 if __name__ == "__main__":
     asyncio.run(main())
