@@ -1,184 +1,117 @@
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 import os
 import json
-import gspread
-import asyncio
-from playwright.async_api import async_playwright
-from oauth2client.service_account import ServiceAccountCredentials
-import re
+import requests
+from bs4 import BeautifulSoup
+import time
 
-async def scrape_rawg_suggestions(game_title):
-    """
-    Navega na página de sugestões de um jogo específico no RAWG.io,
-    e retorna até 30 títulos, plataformas, Metascore e URLs de jogos sugeridos.
-    """
-    # --- NOVA LÓGICA: TRATAMENTO DE CASO ESPECÍFICO ---
-    if game_title.lower() == 'forspoken':
-        game_url_slug = 'project-athia'
-        print("Tratamento especial para 'Forspoken': usando slug 'project-athia'.")
-    else:
-        # Lógica original para tratar nomes de jogos
-        game_url_slug = re.sub(r"[':]", '', game_title.lower())
-        game_url_slug = re.sub(r'[\s]', '-', game_url_slug)
-        game_url_slug = re.sub(r'[^a-z0-9-]', '', game_url_slug)
+def get_sheet(sheet_name, client):
+    """Abre e retorna uma aba específica da planilha."""
+    try:
+        spreadsheet = client.open_by_url(os.environ.get('GAME_SHEET_URL'))
+        return spreadsheet.worksheet(sheet_name)
+    except Exception as e:
+        print(f"Erro ao abrir a aba '{sheet_name}': {e}")
+        return None
+
+def scrape_similar_games(game_name):
+    """Faz o scraping de jogos similares para um único jogo."""
+    print(f"--- Iniciando scraping para: {game_name} ---")
+    slug = game_name.lower().replace(' ', '-').replace(':', '').replace("'", "")
+    url = f"https://rawg.io/games/{slug}/suggested"
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
     
-    url = f'https://rawg.io/games/{game_url_slug}/suggestions'
-    print(f"URL de busca gerada: {url}")
-    
-    limit = 30
-    
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page()
-
-        print(f"Buscando sugestões para '{game_title}' em: {url}")
-        await page.goto(url, wait_until='domcontentloaded')
-
-        try:
-            await page.wait_for_selector('div.game-suggestions__items', timeout=60000)
-            await page.wait_for_timeout(3000)
-            
-            last_height = await page.evaluate("document.body.scrollHeight")
-            scroll_count = 0
-            while True:
-                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                await page.wait_for_timeout(2000)
-                new_height = await page.evaluate("document.body.scrollHeight")
-                
-                scroll_count += 1
-                
-                if new_height == last_height or len(await page.query_selector_all('div.game-card-large')) >= limit:
-                    print(f"Rolagem finalizada após {scroll_count} iterações. Total de jogos carregados.")
-                    break
-                
-                last_height = new_height
-
-            game_elements = await page.query_selector_all('div.game-card-large')
-            
-            suggestions_list = []
-            allowed_platforms = ['playstation', 'pc']
-            
-            for element in game_elements:
-                try:
-                    platform_elements = await element.query_selector_all('div.platforms__platform')
-                    platforms = []
-                    for p in platform_elements:
-                        class_attr = await p.get_attribute('class')
-                        if class_attr:
-                            platform_name = class_attr.split(' ')[-1].replace('platforms__platform_', '')
-                            platforms.append(platform_name.lower())
-                    
-                    metascore_element = await element.query_selector('div.metascore-label')
-                    metascore = await metascore_element.inner_text() if metascore_element else 'N/A'
-                    
-                    if metascore == 'N/A':
-                        print(f"Jogo ignorado por ter Metascore 'N/A'.")
-                        continue
-
-                    if not any(p in platforms for p in allowed_platforms):
-                        print("Jogo ignorado por não estar em PC ou PlayStation.")
-                        continue
-                        
-                    link_element = await element.query_selector('a.game-card-compact__heading_with-link')
-                    title = await link_element.inner_text()
-                    url_suffix = await link_element.get_attribute('href')
-                    
-                    suggestions_list.append({
-                        'title': title, 
-                        'url': f"https://rawg.io{url_suffix}",
-                        'platforms': ', '.join(p.upper() for p in platforms),
-                        'metascore': metascore
-                    })
-                
-                except Exception as e:
-                    print(f"Erro ao extrair dados de um elemento: {e}")
-
-            await browser.close()
-            return suggestions_list[:limit]
-
-        except Exception as e:
-            print(f"Erro ao raspar a página de '{game_title}': {e}")
-            await browser.close()
+    try:
+        response = requests.get(url, headers=headers)
+        if response.status_code != 200:
+            print(f"AVISO: Falha ao acessar a página para '{game_name}'. Status: {response.status_code}")
             return []
 
-def get_google_sheets_client():
-    """
-    Cria um cliente gspread para interagir com o Google Sheets,
-    usando credenciais do GitHub Secrets.
-    """
-    credentials_json = os.environ.get('GOOGLE_CREDENTIALS')
-    if not credentials_json:
-        raise ValueError("GOOGLE_CREDENTIALS not found in environment variables.")
+        soup = BeautifulSoup(response.content, 'html.parser')
+        cards = soup.find_all('div', class_='game-card')
         
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(
-        json.loads(credentials_json), 
-        ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
-    )
-    return gspread.authorize(creds)
+        if not cards:
+            print(f"INFO: Nenhum card de jogo similar encontrado para '{game_name}'.")
+            return []
 
-def normalize_game_name(name):
-    """Converte o nome do jogo para minúsculas e remove caracteres especiais para comparação."""
-    if not isinstance(name, str):
-        return ""
-    name = name.strip().lower()
-    return re.sub(r"['\s:]", '', name)
+        similar_games_data = []
+        for card in cards:
+            title_element = card.find('a', class_='game-card-title')
+            if not title_element: continue
 
-async def main():
-    """
-    Função principal que orquestra a leitura, raspagem e escrita dos dados.
-    """
-    try:
-        client = get_google_sheets_client()
-        spreadsheet_name = "database-jogos"
-        spreadsheet = client.open(spreadsheet_name)
-        
-        source_sheet = spreadsheet.worksheet("Jogos")
-        all_game_titles = [cell[0] for cell in source_sheet.get_all_values() if cell and cell[0] != '']
-        
-        if not all_game_titles:
-            print("Nenhum título de jogo encontrado na planilha.")
-            return
-
-        try:
-            target_sheet = spreadsheet.worksheet("Jogos Similares")
-            processed_titles = [normalize_game_name(title) for title in target_sheet.col_values(1)]
-            processed_titles_set = set(processed_titles)
-        except gspread.exceptions.WorksheetNotFound:
-            print("Aba 'Jogos Similares' não encontrada. Criando...")
-            target_sheet = spreadsheet.add_worksheet(title="Jogos Similares", rows="100", cols="4")
-            target_sheet.update([['Jogo Base', 'Jogo Similar', 'Plataformas', 'Metascore', 'URL']], 'A1:E1')
-            processed_titles_set = set()
-
-        games_to_scrape = [
-            title for title in all_game_titles if normalize_game_name(title) not in processed_titles_set
-        ]
-
-        if not games_to_scrape:
-            print("Todos os jogos já foram processados. Nenhuma ação necessária.")
-            return
+            similar_name = title_element.text.strip()
+            game_url = 'https://rawg.io' + title_element['href']
             
-        print(f"Encontrados {len(games_to_scrape)} jogos para processar.")
-        
-        for game_title in games_to_scrape:
-            suggestions = await scrape_rawg_suggestions(game_title)
+            metascore_div = card.find('div', class_='metacritic-score')
+            metascore = metascore_div.text.strip() if metascore_div else 'N/A'
             
-            if suggestions:
-                rows_to_append = []
-                for suggestion in suggestions:
-                    rows_to_append.append([
-                        game_title,
-                        suggestion['title'],
-                        suggestion['platforms'],
-                        suggestion['metascore'],
-                        suggestion['url']
-                    ])
-                
-                target_sheet.append_rows(rows_to_append)
-                print(f"Dados de '{game_title}' salvos com sucesso. {len(rows_to_append)} linhas adicionadas.")
-            else:
-                print(f"Nenhum resultado de jogos similares encontrado para '{game_title}'.")
-
+            platforms_div = card.find('div', class_='game-card-platforms')
+            platforms = ', '.join([icon['class'][-1].replace('platform-icon--', '').upper() for icon in platforms_div.find_all('i')]) if platforms_div else 'N/A'
+            
+            similar_games_data.append([game_name, similar_name, platforms, metascore, game_url])
+        
+        print(f"SUCESSO: Encontrados {len(similar_games_data)} jogos similares para '{game_name}'.")
+        return similar_games_data
     except Exception as e:
-        print(f"Ocorreu um erro fatal: {e}")
+        print(f"ERRO CRÍTICO durante o scraping para '{game_name}': {e}")
+        return []
+
+def main():
+    # Autenticação com o Google Sheets
+    creds_json = json.loads(os.environ.get('GOOGLE_SHEETS_CREDENTIALS'))
+    scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_json, scope)
+    client = gspread.authorize(creds)
+
+    jogos_sheet = get_sheet('Jogos', client)
+    similares_sheet = get_sheet('Jogos Similares', client)
+
+    if not jogos_sheet or not similares_sheet:
+        print("Não foi possível abrir as planilhas necessárias. Encerrando.")
+        return
+
+    # Verifica se a Action foi acionada com um nome de jogo específico
+    single_game_name = os.environ.get('INPUT_GAME_NAME')
+    
+    games_to_scrape = []
+    if single_game_name:
+        print(f"Modo de execução: Jogo Único. Buscando por '{single_game_name}'.")
+        games_to_scrape.append(single_game_name)
+    else:
+        print("Modo de execução: Completo. Buscando por todos os jogos na biblioteca.")
+        all_games = jogos_sheet.col_values(1)[1:] # Pega todos os jogos da coluna A, exceto o cabeçalho
+        games_to_scrape.extend(all_games)
+
+    all_new_similar_games = []
+    for game_name in games_to_scrape:
+        if not game_name: continue
+        
+        # Faz o scraping
+        similar_games = scrape_similar_games(game_name)
+        all_new_similar_games.extend(similar_games)
+        time.sleep(2) # Pausa para não sobrecarregar o servidor da RAWG
+
+    if not all_new_similar_games:
+        print("Nenhum novo jogo similar encontrado para adicionar.")
+        return
+
+    # Se estamos atualizando para um único jogo, removemos as entradas antigas dele
+    if single_game_name:
+        all_records = similares_sheet.get_all_values()
+        rows_to_delete = [i + 1 for i, row in enumerate(all_records) if row and row[0] == single_game_name]
+        for index in sorted(rows_to_delete, reverse=True):
+            similares_sheet.delete_rows(index)
+        print(f"Entradas antigas para '{single_game_name}' foram removidas.")
+    else:
+        # Se for a execução completa, limpa a planilha inteira
+        similares_sheet.clear()
+        similares_sheet.append_row(['Jogo Base', 'Jogo Similar', 'Plataformas', 'Metascore', 'URL'])
+        print("Planilha 'Jogos Similares' foi limpa para a atualização completa.")
+
+    # Adiciona os novos dados
+    similares_sheet.append_rows(all_new_similar_games, value_input_option='USER_ENTERED')
+    print(f"Total de {len(all_new_similar_games)} novas linhas de jogos similares foram adicionadas à planilha.")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
