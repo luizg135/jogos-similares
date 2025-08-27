@@ -1,44 +1,58 @@
-# .github/workflows/main.yml
-
 name: Scrape RAWG Similar Games
 
 on:
-  # Mantém o agendamento e o gatilho manual (opcional)
-  schedule:
-    - cron: '0 3 * * 1' # Ex: Roda toda segunda-feira às 3 da manhã
+  # Permite que você clique no botão "Run workflow" manualmente no GitHub
   workflow_dispatch:
 
-  # ADICIONA O NOVO GATILHO EXTERNO
+  # Roda em um horário agendado (útil para garantir que tudo seja processado)
+  schedule:
+    - cron: '0 3 * * 1' # Roda toda segunda-feira às 3 da manhã (horário UTC)
+
+  # O gatilho principal que criamos: escuta um evento externo da sua API
   repository_dispatch:
-    types: [scrape-new-game] # Deve ser o mesmo 'event_type' do backend
+    types: [scrape-new-game] # O "nome do evento" que o backend envia
 
 jobs:
   scrape:
+    # A action vai rodar em uma máquina virtual com a última versão do Ubuntu
     runs-on: ubuntu-latest
+    
+    # Define os PASSOS sequenciais que o trabalho executará
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v3
+      # Passo 1: Baixa o código do seu repositório para a máquina virtual
+      - name: Check out repository code
+        uses: actions/checkout@v4
 
+      # Passo 2: Instala a versão do Python que seu script precisa
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10' # Ou a versão que você usa
+          python-version: '3.10'
 
-      - name: Install dependencies
+      # Passo 3: Instala as bibliotecas listadas no seu requirements.txt
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          playwright install chromium # Instala o navegador para o Playwright
 
-      - name: Run Scraper
+      # Passo 4: Instala o navegador que o Playwright usará para o scraping
+      - name: Install Playwright browsers
+        run: playwright install chromium
+
+      # Passo 5: Executa seu script Python
+      - name: Run Scraper Script
         env:
+          # Disponibiliza o segredo GOOGLE_CREDENTIALS como uma variável de ambiente para o script
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
-        run: 
+        run: |
+          # Verifica se o evento que disparou a action foi o 'scrape-new-game'
           if [[ "${{ github.event.action }}" == "scrape-new-game" ]]; then
-            echo "Rodando scraper para um jogo específico..."
-            # Pega o nome do jogo do payload e passa como argumento
+            echo "Gatilho externo recebido. Rodando scraper para um jogo específico..."
+            # Se for, pega o nome do jogo que veio no 'payload' e passa como argumento para o script
+            # As aspas são importantes para lidar com nomes de jogos com espaços
             python scraper.py "${{ github.event.client_payload.game }}"
           else
-            echo "Rodando scraper completo (scan geral)..."
+            # Se não (foi um gatilho manual ou agendado), roda o script sem argumentos
+            echo "Gatilho foi manual ou agendado. Rodando scraper completo (scan geral)..."
             python scraper.py
           fi
