@@ -33,14 +33,12 @@ jobs:
       - name: Run Scraper
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
-        run: |
-          # Verifica se a action foi acionada pelo evento externo
+        run: 
           if [[ "${{ github.event.action }}" == "scrape-new-game" ]]; then
             echo "Rodando scraper para um jogo específico..."
             # Pega o nome do jogo do payload e passa como argumento
-            python seu_script.py "${{ github.event.client_payload.game }}"
+            python scraper.py "${{ github.event.client_payload.game }}"
           else
             echo "Rodando scraper completo (scan geral)..."
-            # Roda o script normalmente se o gatilho foi outro (manual, agendado)
             python scraper.py
           fi
