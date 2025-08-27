@@ -24,7 +24,7 @@ async def scrape_rawg_suggestions(game_title):
     url = f'https://rawg.io/games/{game_url_slug}/suggestions'
     print(f"URL de busca gerada: {url}")
     
-    limit = 30
+    limit = 60
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
