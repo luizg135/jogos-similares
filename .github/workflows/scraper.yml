@@ -42,5 +42,5 @@ jobs:
           else
             echo "Rodando scraper completo (scan geral)..."
             # Roda o script normalmente se o gatilho foi outro (manual, agendado)
-            python seu_script.py
+            python scraper.py
           fi
